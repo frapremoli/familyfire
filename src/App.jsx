@@ -55,6 +55,19 @@ const C = {
 const fmt = (n) => new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR",maximumFractionDigits:0}).format(n??0);
 const fmtK = (n) => `€${((n??0)/1000).toFixed(0)}k`;
 const today = () => new Date().toISOString().slice(0,10);
+const fmtDate = (d) => {
+  if(!d||d==="mensile")return d||"";
+  const [y,m,g] = d.split("-");
+  if(!g)return d;
+  return `${g}-${m}-${y}`;
+};
+const parseCSVDate = (d) => {
+  if(!d)return "";
+  const parts = d.split("-");
+  if(parts.length!==3)return d;
+  if(parts[0].length===4)return d; // già YYYY-MM-DD
+  return `${parts[2]}-${parts[1]}-${parts[0]}`; // DD-MM-YYYY → YYYY-MM-DD
+};
 
 function getValore(x) {
   if (x.tipo==="BFP"||x.tipo==="Libretto") return x.nav;
@@ -76,7 +89,7 @@ const INITIAL_SETTINGS = {
 const CATEGORIE_DEFAULT = [
   "Alimentari","Abbigliamento","Assicurazioni","Casa","Cane","Irene",
   "Lavoro","Mediche","Mutuo","Pulizie","Ristoranti/Svago","Tasse",
-  "Trasporti","Utenze","Viaggi","Stipendio","Cedole","Rimborsi","Prestito Auto","Altro"
+  "Trasporti","Utenze","Viaggi","Stipendio","Cedole","Rimborsi","Prestito Auto","Giroconto","Altro"
 ];
 
 const INITIAL_TRANSACTIONS = [
@@ -426,8 +439,8 @@ function Dashboard({settings:s,transactions,portfolioE,portfolioF,liquidityE,liq
   const totFin=etfVal+bondVal+bfpVal+liqTot||1;
   const etfPct=etfVal/totFin*100;
 
-  const entrate=transactions.filter(t=>t.tipo==="entrata").reduce((s,t)=>s+t.importo,0);
-  const uscite=transactions.filter(t=>t.tipo==="uscita").reduce((s,t)=>s+t.importo,0);
+const entrate=transactions.filter(t=>t.tipo==="entrata"&&t.cat!=="Giroconto").reduce((s,t)=>s+t.importo,0);
+const uscite=transactions.filter(t=>t.tipo==="uscita"&&t.cat!=="Giroconto").reduce((s,t)=>s+t.importo,0);
   const sr=entrate>0?((entrate-uscite)/entrate*100):0;
 
   const proiezione=useMemo(()=>{
@@ -508,10 +521,14 @@ function Dashboard({settings:s,transactions,portfolioE,portfolioF,liquidityE,liq
 function Transazioni({transactions,setTransactions,categories,settings:s}) {
   const [showModal,setShowModal]=useState(false);
   const [confirmDel,setConfirmDel]=useState(null);
+  const [editId,setEditId]=useState(null);
   const [fu,setFu]=useState("tutti");
   const [ft,setFt]=useState("tutti");
   const [fm,setFm]=useState("");
+  const [importErr,setImportErr]=useState("");
+  const [importOk,setImportOk]=useState("");
   const [form,setForm]=useState({data:today(),importo:"",tipo:"uscita",cat:categories[0],utente:"Comune",note:""});
+  const csvRef=useRef();
 
   const filtered=[...transactions].filter(t=>{
     if(fu!=="tutti"&&t.utente!==fu)return false;
@@ -520,14 +537,73 @@ function Transazioni({transactions,setTransactions,categories,settings:s}) {
     return true;
   }).sort((a,b)=>b.data.localeCompare(a.data));
 
-  const totE=filtered.filter(t=>t.tipo==="entrata").reduce((s,t)=>s+t.importo,0);
-  const totU=filtered.filter(t=>t.tipo==="uscita").reduce((s,t)=>s+t.importo,0);
+  const totE=filtered.filter(t=>t.tipo==="entrata"&&t.cat!=="Giroconto").reduce((s,t)=>s+t.importo,0);
+  const totU=filtered.filter(t=>t.tipo==="uscita"&&t.cat!=="Giroconto").reduce((s,t)=>s+t.importo,0);
 
-  function salva() {
-    if(!form.importo||!form.data)return;
-    setTransactions(p=>[...p,{...form,id:Date.now(),importo:parseFloat(form.importo)}]);
-    setShowModal(false);
+  function apriNuova(){
+    setEditId(null);
     setForm({data:today(),importo:"",tipo:"uscita",cat:categories[0],utente:"Comune",note:""});
+    setShowModal(true);
+  }
+
+  function apriModifica(t){
+    setEditId(t.id);
+    setForm({data:t.data,importo:String(t.importo),tipo:t.tipo,cat:t.cat,utente:t.utente,note:t.note||""});
+    setShowModal(true);
+  }
+
+  function salva(){
+    if(!form.importo||!form.data)return;
+    if(editId){
+      setTransactions(p=>p.map(t=>t.id===editId?{...t,...form,importo:parseFloat(form.importo)}:t));
+    } else {
+      setTransactions(p=>[...p,{...form,id:Date.now(),importo:parseFloat(form.importo)}]);
+    }
+    setShowModal(false);
+  }
+
+  function importCSV(e){
+    setImportErr("");setImportOk("");
+    const file=e.target.files[0];
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const lines=ev.target.result.split("\n").map(l=>l.trim()).filter(l=>l);
+        if(lines.length<2){setImportErr("File vuoto o senza dati.");return;}
+        const header=lines[0].toLowerCase().replace(/\s/g,"");
+        if(header!=="data,importo,tipo,categoria,utente,note"){
+          setImportErr("Intestazione non valida. Deve essere: data,importo,tipo,categoria,utente,note");
+          return;
+        }
+        const nuove=[];
+        const errori=[];
+        lines.slice(1).forEach((line,i)=>{
+          const parts=line.split(",");
+          if(parts.length<5){errori.push(`Riga ${i+2}: colonne insufficienti`);return;}
+          const [dataRaw,importoRaw,tipo,cat,utente,...noteParts]=parts;
+          const data=parseCSVDate(dataRaw.trim());
+          const importo=parseFloat(importoRaw.trim());
+          const tipoClean=tipo.trim().toLowerCase();
+          const catClean=cat.trim();
+          const utenteClean=utente.trim();
+          const note=noteParts.join(",").trim();
+          if(!data.match(/^\d{4}-\d{2}-\d{2}/)){errori.push(`Riga ${i+2}: data non valida (${dataRaw})`);return;}
+          if(isNaN(importo)||importo<=0){errori.push(`Riga ${i+2}: importo non valido`);return;}
+          if(!["entrata","uscita"].includes(tipoClean)){errori.push(`Riga ${i+2}: tipo deve essere 'entrata' o 'uscita'`);return;}
+          if(!categories.includes(catClean)){errori.push(`Riga ${i+2}: categoria '${catClean}' non trovata`);return;}
+          if(!["Francesco","Erika","Comune"].includes(utenteClean)&&utenteClean!==s.nomeA&&utenteClean!==s.nomeB){
+            errori.push(`Riga ${i+2}: utente '${utenteClean}' non valido`);return;
+          }
+          nuove.push({id:Date.now()+i,data,importo,tipo:tipoClean,cat:catClean,utente:utenteClean,note});
+        });
+        if(errori.length>0){setImportErr(errori.join(" | "));return;}
+        setTransactions(p=>[...p,...nuove]);
+        setImportOk(`✅ ${nuove.length} transazioni importate correttamente.`);
+      }catch(err){setImportErr("Errore nella lettura del file.");}
+    };
+    reader.readAsText(file);
+    e.target.value="";
   }
 
   const uCol=(u)=>u===s.nomeA?C.accent2:u===s.nomeB?C.irene:C.muted;
@@ -536,8 +612,14 @@ function Transazioni({transactions,setTransactions,categories,settings:s}) {
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <h2 style={{margin:0,fontSize:16,color:C.text}}>💸 Transazioni</h2>
-        <Btn variant="primary" onClick={()=>setShowModal(true)}>+ Nuova</Btn>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <Btn onClick={()=>csvRef.current.click()}>⬆ Importa CSV</Btn>
+          <input ref={csvRef} type="file" accept=".csv" onChange={importCSV} style={{display:"none"}}/>
+          <Btn variant="primary" onClick={apriNuova}>+ Nuova</Btn>
+        </div>
       </div>
+      {importErr&&<div style={{background:C.danger+"18",border:`1px solid ${C.danger}44`,borderRadius:8,padding:"10px 14px",fontSize:12,color:"#fca5a5"}}>{importErr}</div>}
+      {importOk&&<div style={{background:C.green+"18",border:`1px solid ${C.green}44`,borderRadius:8,padding:"10px 14px",fontSize:12,color:C.green}}>{importOk}</div>}
       <Card>
         <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
           <Sel label="Utente" value={fu} onChange={e=>setFu(e.target.value)} options={[{value:"tutti",label:"Tutti"},{value:s.nomeA,label:s.nomeA},{value:s.nomeB,label:s.nomeB},{value:"Comune",label:"Comune"}]}/>
@@ -553,19 +635,24 @@ function Transazioni({transactions,setTransactions,categories,settings:s}) {
       <Card>
         <Table
           cols={[
-            {key:"data",label:"Data"},
+            {key:"data",label:"Data",render:r=><span style={{fontFamily:"monospace",fontSize:12}}>{fmtDate(r.data)}</span>},
             {key:"utente",label:"Chi",render:r=><Pill label={r.utente} color={uCol(r.utente)}/>},
             {key:"cat",label:"Categoria"},
             {key:"tipo",label:"",render:r=><Pill label={r.tipo} color={r.tipo==="entrata"?C.green:C.danger}/>},
             {key:"importo",label:"Importo",right:true,mono:true,render:r=><span style={{color:r.tipo==="entrata"?C.green:C.danger}}>{r.tipo==="entrata"?"+":"-"}{fmt(r.importo)}</span>},
-            {key:"del",label:"",render:r=><Btn small variant="danger" onClick={()=>setConfirmDel(r.id)}>✕</Btn>},
+            {key:"az",label:"",render:r=>(
+              <div style={{display:"flex",gap:3}}>
+                <Btn small onClick={()=>apriModifica(r)}>✏</Btn>
+                <Btn small variant="danger" onClick={()=>setConfirmDel(r.id)}>✕</Btn>
+              </div>
+            )},
           ]}
           rows={filtered} emptyMsg="Nessuna transazione"
         />
       </Card>
       {confirmDel&&<ConfirmModal msg="Eliminare questa transazione?" onConfirm={()=>{setTransactions(p=>p.filter(t=>t.id!==confirmDel));setConfirmDel(null);}} onCancel={()=>setConfirmDel(null)}/>}
       {showModal&&(
-        <Modal title="Nuova Transazione" onClose={()=>setShowModal(false)}>
+        <Modal title={editId?"Modifica Transazione":"Nuova Transazione"} onClose={()=>setShowModal(false)}>
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
             <Inp label="Data" type="date" value={form.data} onChange={e=>setForm(p=>({...p,data:e.target.value}))}/>
             <Sel label="Tipo" value={form.tipo} onChange={e=>setForm(p=>({...p,tipo:e.target.value}))} options={[{value:"uscita",label:"Uscita"},{value:"entrata",label:"Entrata"}]}/>
@@ -575,11 +662,21 @@ function Transazioni({transactions,setTransactions,categories,settings:s}) {
             <Inp label="Note" value={form.note} onChange={e=>setForm(p=>({...p,note:e.target.value}))}/>
             <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:4}}>
               <Btn onClick={()=>setShowModal(false)}>Annulla</Btn>
-              <Btn variant="primary" onClick={salva}>Salva</Btn>
+              <Btn variant="primary" onClick={salva}>{editId?"Aggiorna":"Salva"}</Btn>
             </div>
           </div>
         </Modal>
       )}
+      <Card style={{borderColor:C.border}}>
+        <SH title="Formato CSV per import" icon="📋"/>
+        <div style={{fontSize:11,color:C.muted,lineHeight:1.8}}>
+          <div>Intestazione obbligatoria (prima riga):</div>
+          <code style={{display:"block",background:C.surface2,borderRadius:6,padding:"6px 10px",margin:"4px 0 8px",color:C.accent,fontSize:11}}>data,importo,tipo,categoria,utente,note</code>
+          <div>Esempio:</div>
+          <code style={{display:"block",background:C.surface2,borderRadius:6,padding:"6px 10px",margin:"4px 0",color:C.text,fontSize:11}}>15-01-2025,1500.00,uscita,Alimentari,Comune,Spesa gennaio</code>
+          <div style={{marginTop:6}}>• <b style={{color:C.text}}>data</b>: formato DD-MM-YYYY &nbsp;• <b style={{color:C.text}}>tipo</b>: entrata o uscita &nbsp;• <b style={{color:C.text}}>utente</b>: {s.nomeA}, {s.nomeB} o Comune</div>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -589,7 +686,7 @@ function Budget({transactions,budgets,setBudgets,categories}) {
   const anno=new Date().getFullYear();
   const speseCat=useMemo(()=>{
     const m={};
-    transactions.filter(t=>t.tipo==="uscita"&&t.data.startsWith(String(anno))).forEach(t=>{m[t.cat]=(m[t.cat]||0)+t.importo;});
+    transactions.filter(t=>t.tipo==="uscita"&&t.cat!=="Giroconto"&&t.data.startsWith(String(anno))).forEach(t=>{m[t.cat]=(m[t.cat]||0)+t.importo;});
     return m;
   },[transactions,anno]);
   const totBudget=Object.values(budgets).reduce((s,v)=>s+v,0);
@@ -633,16 +730,33 @@ function Budget({transactions,budgets,setBudgets,categories}) {
 function Calendario({forecasts,setForecasts,setTransactions,categories,settings:s}) {
   const [showModal,setShowModal]=useState(false);
   const [confirmDel,setConfirmDel]=useState(null);
+  const [editId,setEditId]=useState(null);
   const [form,setForm]=useState({data:"",importo:"",tipo:"uscita",cat:categories[0],utente:"Comune",desc:"",stato:"previsto"});
 
-  function converti(f) {
+  function apriNuovo(){
+    setEditId(null);
+    setForm({data:"",importo:"",tipo:"uscita",cat:categories[0],utente:"Comune",desc:"",stato:"previsto"});
+    setShowModal(true);
+  }
+
+  function apriModifica(f){
+    setEditId(f.id);
+    setForm({data:f.data,importo:String(f.importo),tipo:f.tipo,cat:f.cat,utente:f.utente,desc:f.desc||"",stato:f.stato});
+    setShowModal(true);
+  }
+
+  function converti(f){
     setTransactions(p=>[...p,{id:Date.now(),data:f.data,importo:f.importo,tipo:f.tipo,cat:f.cat,utente:f.utente,note:f.desc}]);
     setForecasts(p=>p.map(x=>x.id===f.id?{...x,stato:"pagato"}:x));
   }
 
-  function salva() {
+  function salva(){
     if(!form.importo||!form.data)return;
-    setForecasts(p=>[...p,{...form,id:Date.now(),importo:parseFloat(form.importo)}]);
+    if(editId){
+      setForecasts(p=>p.map(f=>f.id===editId?{...f,...form,importo:parseFloat(form.importo)}:f));
+    } else {
+      setForecasts(p=>[...p,{...form,id:Date.now(),importo:parseFloat(form.importo)}]);
+    }
     setShowModal(false);
   }
 
@@ -653,12 +767,12 @@ function Calendario({forecasts,setForecasts,setTransactions,categories,settings:
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
         <h2 style={{margin:0,fontSize:16,color:C.text}}>📅 Calendario Finanziario</h2>
-        <Btn variant="primary" onClick={()=>setShowModal(true)}>+ Evento</Btn>
+        <Btn variant="primary" onClick={apriNuovo}>+ Evento</Btn>
       </div>
       <Card>
         <Table
           cols={[
-            {key:"data",label:"Data"},
+            {key:"data",label:"Data",render:r=><span style={{fontFamily:"monospace",fontSize:12}}>{fmtDate(r.data)}</span>},
             {key:"desc",label:"Descrizione"},
             {key:"utente",label:"Chi",render:r=><Pill label={r.utente} color={uCol(r.utente)}/>},
             {key:"tipo",label:"",render:r=><Pill label={r.tipo} color={r.tipo==="entrata"?C.green:C.danger}/>},
@@ -667,6 +781,7 @@ function Calendario({forecasts,setForecasts,setTransactions,categories,settings:
             {key:"az",label:"",render:r=>r.stato!=="pagato"&&(
               <div style={{display:"flex",gap:4}}>
                 <Btn small variant="primary" onClick={()=>converti(r)}>→</Btn>
+                <Btn small onClick={()=>apriModifica(r)}>✏</Btn>
                 <Btn small variant="danger" onClick={()=>setConfirmDel(r.id)}>✕</Btn>
               </div>
             )},
@@ -676,7 +791,7 @@ function Calendario({forecasts,setForecasts,setTransactions,categories,settings:
       </Card>
       {confirmDel&&<ConfirmModal msg="Eliminare evento?" onConfirm={()=>{setForecasts(p=>p.filter(x=>x.id!==confirmDel));setConfirmDel(null);}} onCancel={()=>setConfirmDel(null)}/>}
       {showModal&&(
-        <Modal title="Nuovo Evento Previsionale" onClose={()=>setShowModal(false)}>
+        <Modal title={editId?"Modifica Evento":"Nuovo Evento Previsionale"} onClose={()=>setShowModal(false)}>
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
             <Inp label="Data prevista" type="date" value={form.data} onChange={e=>setForm(p=>({...p,data:e.target.value}))}/>
             <Sel label="Tipo" value={form.tipo} onChange={e=>setForm(p=>({...p,tipo:e.target.value}))} options={[{value:"uscita",label:"Uscita"},{value:"entrata",label:"Entrata"}]}/>
@@ -686,7 +801,7 @@ function Calendario({forecasts,setForecasts,setTransactions,categories,settings:
             <Inp label="Descrizione" value={form.desc} onChange={e=>setForm(p=>({...p,desc:e.target.value}))}/>
             <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:4}}>
               <Btn onClick={()=>setShowModal(false)}>Annulla</Btn>
-              <Btn variant="primary" onClick={salva}>Salva</Btn>
+              <Btn variant="primary" onClick={salva}>{editId?"Aggiorna":"Salva"}</Btn>
             </div>
           </div>
         </Modal>
@@ -774,12 +889,22 @@ function PortafoglioUtente({label,color,items,setItems,liquidity,setLiquidity,mo
 
       <Card>
         <SH title="Liquidità" icon="🏦"/>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:8}}>
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
           {liquidity.map((l,i)=>(
-            <div key={l.id} style={{background:C.surface2,borderRadius:8,padding:"10px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.muted,flex:1}}>{l.nome}</span>
-              <input type="number" value={l.importo} onChange={e=>setLiquidity(p=>p.map((x,j)=>j===i?{...x,importo:parseFloat(e.target.value)||0}:x))}
-                style={{width:80,background:C.surface3,border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 7px",color:C.text,fontSize:12,textAlign:"right",outline:"none"}}/>
+            <div key={l.id} style={{background:C.surface2,borderRadius:8,padding:"10px 12px",display:"flex",alignItems:"center",gap:8}}>
+              <input
+                value={l.nome}
+                onChange={e=>setLiquidity(p=>p.map((x,j)=>j===i?{...x,nome:e.target.value}:x))}
+                style={{flex:1,background:"transparent",border:"none",color:C.text,fontSize:12,outline:"none",minWidth:80}}
+              />
+              <input
+                type="number"
+                value={l.importo}
+                onChange={e=>setLiquidity(p=>p.map((x,j)=>j===i?{...x,importo:parseFloat(e.target.value)||0}:x))}
+                style={{width:90,background:C.surface3,border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 7px",color:C.text,fontSize:12,textAlign:"right",outline:"none"}}
+              />
+              <span style={{fontSize:10,color:C.muted}}>€</span>
+              <Btn small variant="danger" onClick={()=>setLiquidity(p=>p.filter((_,j)=>j!==i))}>✕</Btn>
             </div>
           ))}
           <Btn small variant="ghost" onClick={()=>setLiquidity(p=>[...p,{id:Date.now(),nome:"Nuovo conto",importo:0}])}>+ Conto</Btn>
@@ -881,7 +1006,7 @@ function Scadenze({forecasts,loanPayments}) {
               <Pill label={e.urgenza} color={urgCol[e.urgenza]}/>
               <span style={{fontSize:12,color:C.text,fontWeight:600}}>{e.evento}</span>
             </div>
-            <div style={{fontSize:11,color:C.muted}}>{e.data} · {e.utente}</div>
+            <div style={{fontSize:11,color:C.muted}}>{fmtDate(e.data)} · {e.utente}</div>
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:16,fontWeight:700,color:e.tipo==="entrata"?C.green:C.warn,fontFamily:"Georgia,serif"}}>{fmt(e.importo)}</div>
