@@ -816,10 +816,25 @@ function PortafoglioUtente({label,color,items,setItems,liquidity,setLiquidity,mo
   const [showAdd,setShowAdd]=useState(false);
   const [showNavId,setShowNavId]=useState(null);
   const [confirmDel,setConfirmDel]=useState(null);
+  const [editStrId,setEditStrId]=useState(null);
   const [navVal,setNavVal]=useState("");
   const [form,setForm]=useState({nome:"",isin:"",tipo:"ETF",qty:"",nominale:"",carico:"",nav:""});
 
-  const tipi=["tutti","ETF","ETC","Obbligazione","BFP","Libretto","Monetario"];
+  function apriModificaStr(r){
+    setEditStrId(r.id);
+    setForm({
+      nome:r.nome||"",
+      isin:r.isin||"",
+      tipo:r.tipo||"ETF",
+      qty:r.qty!=null?String(r.qty):"",
+      nominale:r.nominale!=null?String(r.nominale):"",
+      carico:r.carico!=null?String(r.carico):"",
+      nav:r.nav!=null?String(r.nav):"",
+    });
+    setShowAdd(true);
+  }
+
+  const tipi=["tutti","ETF","ETC","Obbligazione","BFP","Libretto"];
   const filtered=filtro==="tutti"?items:items.filter(x=>x.tipo===filtro);
   const totPorta=items.reduce((s,x)=>s+getValore(x),0);
   const totLiq=liquidity.reduce((s,x)=>s+x.importo,0);
@@ -831,12 +846,19 @@ function PortafoglioUtente({label,color,items,setItems,liquidity,setLiquidity,mo
     if(!form.nome)return;
     const isQty=!["BFP","Libretto"].includes(form.tipo);
     const isObb=form.tipo==="Obbligazione";
-    setItems(p=>[...p,{...form,id:Date.now(),
+    const record={
+      ...form,
       qty:isQty&&!isObb?parseFloat(form.qty)||0:undefined,
       nominale:isObb?parseFloat(form.nominale)||0:undefined,
       carico:parseFloat(form.carico)||0,
       nav:parseFloat(form.nav)||0,
-    }]);
+    };
+    if(editStrId){
+      setItems(p=>p.map(x=>x.id===editStrId?{...x,...record}:x));
+      setEditStrId(null);
+    } else {
+      setItems(p=>[...p,{...record,id:Date.now()}]);
+    }
     setShowAdd(false);
     setForm({nome:"",isin:"",tipo:"ETF",qty:"",nominale:"",carico:"",nav:""});
   }
@@ -879,6 +901,7 @@ function PortafoglioUtente({label,color,items,setItems,liquidity,setLiquidity,mo
             {key:"az",label:"",render:r=>(
               <div style={{display:"flex",gap:3}}>
                 <Btn small onClick={()=>{setShowNavId(r.id);setNavVal(r.nav);}}>NAV</Btn>
+                <Btn small onClick={()=>apriModificaStr(r)}>✏</Btn>
                 <Btn small variant="danger" onClick={()=>setConfirmDel(r.id)}>✕</Btn>
               </div>
             )},
@@ -913,22 +936,48 @@ function PortafoglioUtente({label,color,items,setItems,liquidity,setLiquidity,mo
 
       {monetary&&<Card>
         <SH title="ETF Monetari (es. XEON)" icon="🔵"/>
-        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))",gap:8,marginBottom:8}}>
-          {monetary.map((m,i)=>(
-            <div key={m.id} style={{background:C.surface2,borderRadius:8,padding:"10px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div>
-                <div style={{fontSize:12,color:C.text}}>{m.nome}</div>
-                <div style={{fontSize:10,color:C.muted}}>{m.qty} × €{m.nav?.toFixed(2)}</div>
+        <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:8}}>
+          {monetary.map((m,i)=>{
+            const val=(m.qty||0)*(m.nav||0);
+            return(
+              <div key={m.id} style={{background:C.surface2,borderRadius:8,padding:"10px 12px"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <div style={{flex:1,minWidth:120}}>
+                    <div style={{fontSize:12,fontWeight:600,color:C.text}}>{m.nome}</div>
+                    <div style={{fontSize:10,color:C.muted,fontFamily:"monospace"}}>{m.isin||"—"}</div>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+                      <span style={{fontSize:9,color:C.muted,marginBottom:2}}>Quote</span>
+                      <input
+                        type="number"
+                        value={m.qty||""}
+                        onChange={e=>setMonetary(p=>p.map((x,j)=>j===i?{...x,qty:parseFloat(e.target.value)||0}:x))}
+                        style={{width:60,background:C.surface3,border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 6px",color:C.text,fontSize:12,textAlign:"right",outline:"none"}}
+                      />
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+                      <span style={{fontSize:9,color:C.muted,marginBottom:2}}>NAV €</span>
+                      <input
+                        type="number"
+                        value={m.nav||""}
+                        onChange={e=>setMonetary(p=>p.map((x,j)=>j===i?{...x,nav:parseFloat(e.target.value)||0}:x))}
+                        style={{width:70,background:C.surface3,border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 6px",color:C.text,fontSize:12,textAlign:"right",outline:"none"}}
+                      />
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+                      <span style={{fontSize:9,color:C.muted,marginBottom:2}}>Totale</span>
+                      <span style={{fontSize:13,fontWeight:700,color:C.monetario,minWidth:70,textAlign:"right"}}>{fmt(val)}</span>
+                    </div>
+                    <Btn small variant="danger" onClick={()=>setMonetary(p=>p.filter((_,j)=>j!==i))}>✕</Btn>
+                  </div>
+                </div>
               </div>
-              <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
-                <span style={{fontSize:13,fontWeight:700,color:C.monetario}}>{fmt(getValore(m))}</span>
-                <input type="number" placeholder="NAV" value={m.nav||""} onChange={e=>setMonetary(p=>p.map((x,j)=>j===i?{...x,nav:parseFloat(e.target.value)||0}:x))}
-                  style={{width:65,background:C.surface3,border:`1px solid ${C.border}`,borderRadius:5,padding:"3px 6px",color:C.text,fontSize:11,textAlign:"right",outline:"none"}}/>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <Btn small variant="ghost" onClick={()=>setMonetary(p=>[...p,{id:Date.now(),nome:"XEON",isin:"LU0290358497",tipo:"Monetario",qty:0,carico:0,nav:0}])}>+ ETF Monetario</Btn>
+        <div style={{marginTop:8,fontSize:11,color:C.muted}}>I ETF monetari non rientrano nell'equity. Sono conteggiati come liquidità.</div>
       </Card>}
 
       {confirmDel&&<ConfirmModal msg="Eliminare strumento?" onConfirm={()=>{setItems(p=>p.filter(x=>x.id!==confirmDel));setConfirmDel(null);}} onCancel={()=>setConfirmDel(null)}/>}
@@ -941,18 +990,18 @@ function PortafoglioUtente({label,color,items,setItems,liquidity,setLiquidity,mo
           </div>
         </div>
       </Modal>}
-      {showAdd&&<Modal title="Aggiungi Strumento" onClose={()=>setShowAdd(false)}>
+      {showAdd&&<Modal title={editStrId?"Modifica Strumento":"Aggiungi Strumento"} onClose={()=>{setShowAdd(false);setEditStrId(null);}}>
         <div style={{display:"flex",flexDirection:"column",gap:12}}>
           <Inp label="Nome" value={form.nome} onChange={e=>setForm(p=>({...p,nome:e.target.value}))}/>
           <Inp label="ISIN (opzionale)" value={form.isin} onChange={e=>setForm(p=>({...p,isin:e.target.value}))}/>
-          <Sel label="Tipo" value={form.tipo} onChange={e=>setForm(p=>({...p,tipo:e.target.value}))} options={["ETF","ETC","Obbligazione","BFP","Libretto","Monetario"]}/>
+          <Sel label="Tipo" value={form.tipo} onChange={e=>setForm(p=>({...p,tipo:e.target.value}))} options={["ETF","ETC","Obbligazione","BFP","Libretto"]}/>
           {form.tipo==="Obbligazione"&&<Inp label="Nominale (€)" type="number" value={form.nominale} onChange={e=>setForm(p=>({...p,nominale:e.target.value}))}/>}
           {!["BFP","Libretto"].includes(form.tipo)&&form.tipo!=="Obbligazione"&&<Inp label="Quantità" type="number" value={form.qty} onChange={e=>setForm(p=>({...p,qty:e.target.value}))}/>}
           <Inp label={["BFP","Libretto"].includes(form.tipo)?"Versato (€)":"Prezzo carico (€)"} type="number" value={form.carico} onChange={e=>setForm(p=>({...p,carico:e.target.value}))}/>
           <Inp label={["BFP","Libretto"].includes(form.tipo)?"Valore attuale (€)":form.tipo==="Obbligazione"?"Prezzo attuale (%)":"NAV (€)"} type="number" value={form.nav} onChange={e=>setForm(p=>({...p,nav:e.target.value}))}/>
           <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:4}}>
             <Btn onClick={()=>setShowAdd(false)}>Annulla</Btn>
-            <Btn variant="primary" onClick={salva}>Salva</Btn>
+            <Btn variant="primary" onClick={salva}>{editStrId?"Aggiorna":"Salva"}</Btn>
           </div>
         </div>
       </Modal>}
